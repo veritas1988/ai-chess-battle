@@ -3,7 +3,11 @@ import dynamic from 'next/dynamic';
 import { Chess } from 'chess.js';
 
 // Dynamically import the chessboard component because it relies on browser APIs
-const Chessboard = dynamic(() => import('react-chessboard'), { ssr: false });
+const Chessboard = dynamic(
+  () => import('react-chessboard').then((mod) => mod.Chessboard),
+  { ssr: false }
+);
+
 
 /**
  * The main page renders a chess board and continuously pits two AI models
