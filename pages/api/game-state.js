@@ -3,7 +3,16 @@
  * All users poll this endpoint to get synchronized game updates.
  */
 
-import { getGameManager } from './game-manager';
+// Temporary simple game state (replace with proper game manager later)
+const gameState = {
+  fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+  gptWins: 0,
+  claudeWins: 0,
+  gameStatus: 'Waiting for game to start...',
+  currentPlayer: 'GPT',
+  gameId: 1,
+  viewers: 0
+};
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
@@ -11,10 +20,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
-  try {
-    const gameManager = getGameManager();
-    const gameState = gameManager.getGameState();
-    
+  try {    
     res.status(200).json(gameState);
   } catch (error) {
     console.error('Error getting game state:', error);
