@@ -1,14 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
-import * as ChessJS from 'chess.js';
-const Chess = typeof ChessJS === 'function' ? ChessJS : ChessJS.Chess;
+import { Chess } from 'chess.js';
 
-// Compatibility helpers across chess.js versions
-const isGameOver = (g) => (typeof g.isGameOver === 'function' ? g.isGameOver() : g.game_over());
-const isCheckmate = (g) => (typeof g.isCheckmate === 'function' ? g.isCheckmate() : g.in_checkmate());
-
-
-// Correct dynamic import for react-chessboard v4 (named export)
+// Dynamically import the chessboard component because it relies on browser APIs
 const Chessboard = dynamic(
   () => import('react-chessboard').then((mod) => mod.Chessboard),
   { ssr: false }
@@ -19,23 +13,34 @@ const Chessboard = dynamic(
  * against each other. A scoreboard and token display live in the header.
  */
 export default function Home() {
-  // Single Chess instance to hold the game state
+  // Initialize a single Chess instance. The object itself contains the
+  // game state and is mutated as moves are applied.
   const gameRef = useRef(new Chess());
 
-  // Board position (FEN) for the UI
+  // Represent the current board position using a FEN string. Whenever
+  // gameRef.current is mutated, updateFEN() should be called to refresh
+  // the board displayed by react-chessboard.
   const [fen, setFen] = useState(gameRef.current.fen());
 
-  // Tally of wins; persisted in localStorage
+  // Keep track of each engine's total wins. These values are persisted
+  // locally in the browser so they survive page refreshes.
   const [gptWins, setGptWins] = useState(0);
   const [claudeWins, setClaudeWins] = useState(0);
 
-  // Public token (e.g., CA) shown in the header
+  // Add game state tracking
+  const [gameStatus, setGameStatus] = useState('Starting...');
+  const [currentPlayer, setCurrentPlayer] = useState('');
+
+  // Token to show on the page. Expose it via a public environment variable.
   const token = process.env.NEXT_PUBLIC_TOKEN ?? '';
 
-  // Prevents multiple loops from starting
+  // A guard to avoid starting multiple overlapping game loops.
   const runningRef = useRef(false);
 
-  // Persist tallies
+  /**
+   * Persist win counters to localStorage whenever they change. This effect
+   * only runs in the browser because localStorage is undefined on the server.
+   */
   useEffect(() => {
     if (typeof window !== 'undefined') {
       localStorage.setItem('gptWins', gptWins.toString());
@@ -43,7 +48,10 @@ export default function Home() {
     }
   }, [gptWins, claudeWins]);
 
-  // Load tallies
+  /**
+   * Load persisted win counters on initial mount. Without this effect the
+   * scoreboard would reset whenever the page reloads.
+   */
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const storedGpt = parseInt(localStorage.getItem('gptWins') ?? '0', 10);
@@ -53,16 +61,29 @@ export default function Home() {
     }
   }, []);
 
-  // Start the infinite game loop once
+  /**
+   * Kick off the infinite game loop after the component mounts. Because
+   * Next.js invokes components both on the server and client, guard this
+   * effect so it only runs once in the browser.
+   */
   useEffect(() => {
-    if (!runningRef.current) {
+    // Add additional guards to ensure we're in the browser and component is mounted
+    if (typeof window !== 'undefined' && !runningRef.current) {
       runningRef.current = true;
-      void startGameLoop();
+      console.log('Starting game loop...');
+      // Start the asynchronous loop without awaiting it. It will continue
+      // playing games forever in the background.
+      startGameLoop().catch(error => {
+        console.error('Game loop error:', error);
+        runningRef.current = false; // Reset so it can be restarted
+      });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, []); // Remove the exhaustive-deps disable comment
 
-  // Copy token helper
+  /**
+   * Helper to copy the token value to the clipboard. If the clipboard API
+   * isn't available (e.g. older browsers), silently fail.
+   */
   const copyToken = () => {
     if (typeof navigator !== 'undefined' && navigator.clipboard) {
       navigator.clipboard.writeText(token).catch(() => {});
@@ -70,139 +91,185 @@ export default function Home() {
   };
 
   /**
-   * Proxy call to our serverless API to get a move from GPT or Claude.
-   * Returns a UCI string like "e2e4" or undefined on error.
+   * Call the serverless API to retrieve a move for the given engine. The
+   * backend hides your API keys and handles the prompt formatting. This
+   * function returns a string like "e2e4" or undefined on error.
+   *
+   * @param {string} fenStr Current position in FEN
+   * @param {string} ai Which engine to query: 'gpt' or 'claude'
    */
   const requestMove = async (fenStr, ai) => {
     try {
+      console.log(`Requesting move from ${ai} for position: ${fenStr}`);
       const res = await fetch('/api/move', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fen: fenStr, ai }),
       });
-      if (!res.ok) return undefined;
+      
+      if (!res.ok) {
+        console.error(`API call failed with status: ${res.status}`);
+        const errorText = await res.text();
+        console.error('Error response:', errorText);
+        return undefined;
+      }
+      
       const data = await res.json();
+      console.log(`${ai} responded with:`, data);
       return typeof data.move === 'string' ? data.move.trim() : undefined;
     } catch (err) {
-      console.error('[api] move error:', err);
+      console.error(`Error calling move API for ${ai}:`, err);
       return undefined;
     }
   };
 
   /**
-   * Core loop: plays games forever. Uses 8s pacing between moves and between games.
-   * Logs each step to help diagnose if anything stalls.
+   * The core loop: repeatedly plays games between the two AIs. After each
+   * game finishes it updates the win counters and immediately starts a new
+   * game. A small delay between moves makes the progression easier to
+   * follow. Because this function contains an infinite loop, it must not
+   * block the main thread; hence the use of async/await and timeouts.
    */
   const startGameLoop = async () => {
     const game = gameRef.current;
-    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
+    let gameCount = 0;
+    
     while (true) {
-      console.log('[loop] NEW GAME');
-      game.reset();
-      setFen(game.fen());
-
-      // Play until terminal state
-      while (!game.game_over()) {
-        // GPT (White)
-        console.log('[loop] GPT turn (white). FEN:', game.fen());
-        const gptMove = await requestMove(game.fen(), 'gpt');
-        console.log('[loop] GPT returned:', gptMove);
-        if (!applyAIMove(game, gptMove)) {
-          console.log('[loop] GPT move failed; breaking game.');
-          break;
-        }
+      try {
+        gameCount++;
+        console.log(`Starting game ${gameCount}`);
+        
+        // Reset game state at the start of each match
+        game.reset();
         setFen(game.fen());
-        console.log('[loop] After GPT move, FEN:', game.fen());
-        await sleep(8000);
-        if (game.game_over()) break;
+        setGameStatus(`Game ${gameCount} in progress`);
+        setCurrentPlayer('GPT (White)');
 
-        // Claude (Black)
-        console.log('[loop] Claude turn (black). FEN:', game.fen());
-        const claudeMove = await requestMove(game.fen(), 'claude');
-        console.log('[loop] Claude returned:', claudeMove);
-        if (!applyAIMove(game, claudeMove)) {
-          console.log('[loop] Claude move failed; breaking game.');
-          break;
+        // Play until a terminal state occurs
+        while (!game.game_over()) {
+          // GPT move (white pieces)
+          setCurrentPlayer('GPT (White)');
+          const gptMove = await requestMove(game.fen(), 'gpt');
+          if (!applyAIMove(game, gptMove, 'GPT')) {
+            console.log('GPT failed to make a move, ending game');
+            break;
+          }
+          setFen(game.fen());
+          
+          // Brief pause to let the board render and the viewer follow along
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          if (game.game_over()) break;
+
+          // Claude move (black pieces)
+          setCurrentPlayer('Claude (Black)');
+          const claudeMove = await requestMove(game.fen(), 'claude');
+          if (!applyAIMove(game, claudeMove, 'Claude')) {
+            console.log('Claude failed to make a move, ending game');
+            break;
+          }
+          setFen(game.fen());
+          await new Promise(resolve => setTimeout(resolve, 1000));
         }
-        setFen(game.fen());
-        console.log('[loop] After Claude move, FEN:', game.fen());
-        await sleep(8000);
-      }
 
-      // Determine winner (in checkmate, the side to move is the loser)
-      let winner = '';
-      if (game.in_checkmate()) {
-        winner = game.turn() === 'b' ? 'gpt' : 'claude';
+        // Determine the winner and update counters
+        let winner = '';
+        let gameResult = '';
+        
+        if (game.in_checkmate()) {
+          winner = game.turn() === 'b' ? 'gpt' : 'claude';
+          gameResult = `Checkmate! ${winner === 'gpt' ? 'GPT' : 'Claude'} wins!`;
+        } else if (game.in_stalemate()) {
+          gameResult = 'Stalemate - Draw!';
+        } else if (game.in_draw()) {
+          gameResult = 'Draw!';
+        } else {
+          gameResult = 'Game ended unexpectedly';
+        }
+        
+        console.log(gameResult);
+        setGameStatus(gameResult);
+        setCurrentPlayer('');
+        
+        if (winner === 'gpt') {
+          setGptWins(wins => wins + 1);
+        } else if (winner === 'claude') {
+          setClaudeWins(wins => wins + 1);
+        }
+        
+        // Wait a moment before beginning the next match
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        
+      } catch (error) {
+        console.error('Error in game loop:', error);
+        setGameStatus('Error occurred, restarting...');
+        await new Promise(resolve => setTimeout(resolve, 2000));
       }
-      if (winner === 'gpt') {
-        setGptWins((w) => w + 1);
-        console.log('[loop] GPT wins');
-      } else if (winner === 'claude') {
-        setClaudeWins((w) => w + 1);
-        console.log('[loop] Claude wins');
-      } else {
-        console.log('[loop] Draw or early break');
-      }
-
-      await sleep(8000);
     }
   };
 
   /**
-   * Apply a UCI move ("e2e4") to chess.js; fallback to a random legal move
-   * if the engine returns nothing or an illegal move.
+   * Attempt to apply a move returned by an AI. If the AI supplies an illegal
+   * move or fails altogether, fall back to a random legal move so play can
+   * continue. Returns a boolean indicating whether a move was successfully
+   * applied. This helper never throws.
+   *
+   * @param {Chess} game The active Chess instance
+   * @param {string|undefined} moveUci Move in UCI (e.g. "e2e4") or undefined
+   * @param {string} playerName Name of the player for logging
    */
-  const applyAIMove = (game, moveUci) => {
+  const applyAIMove = (game, moveUci, playerName) => {
     const moves = game.moves({ verbose: true });
-    if (moves.length === 0) return false;
+    if (moves.length === 0) {
+      console.log('No legal moves available');
+      return false;
+    }
 
-    const candidate =
-      typeof moveUci === 'string' && moveUci.length >= 4
-        ? {
-            from: moveUci.slice(0, 2),
-            to: moveUci.slice(2, 4),
-            promotion: moveUci.length === 5 ? moveUci[4] : undefined,
-          }
-        : null;
+    // If the engine returned a string of at least four characters, try to
+    // construct a move from it. Handle optional promotion correctly.
+    const candidate = (typeof moveUci === 'string' && moveUci.length >= 4)
+      ? {
+          from: moveUci.slice(0, 2),
+          to: moveUci.slice(2, 4),
+          promotion: moveUci.length === 5 ? moveUci[4] : undefined,
+        }
+      : null;
 
     try {
       if (candidate) {
-        game.move(candidate);
-        return true;
+        const move = game.move(candidate);
+        if (move) {
+          console.log(`${playerName} played: ${moveUci} (${move.san})`);
+          return true;
+        }
       }
     } catch (err) {
-      // fall through to random fallback
+      console.log(`${playerName}'s move ${moveUci} was invalid:`, err.message);
+      // Fall through to random fallback
     }
 
+    // Choose a random legal move when the AI fails or produces an illegal move
     const randomMove = moves[Math.floor(Math.random() * moves.length)];
-    game.move(randomMove.san);
+    const move = game.move(randomMove.san);
+    console.log(`${playerName} fallback to random move: ${move.san}`);
     return true;
   };
 
   return (
     <div style={{ padding: '20px', fontFamily: 'Arial, sans-serif' }}>
-      {/* Header: token + win tally */}
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          marginBottom: '10px',
-        }}
-      >
+      {/* Header containing the token display and the win tally */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
         <div style={{ display: 'flex', alignItems: 'center' }}>
           <strong style={{ marginRight: '5px' }}>Token:</strong>
           <span style={{ fontFamily: 'monospace' }}>{token}</span>
           <button
             onClick={copyToken}
-            style={{
-              marginLeft: '8px',
-              padding: '4px 12px',
-              cursor: 'pointer',
-              border: '1px solid #ccc',
-              borderRadius: '4px',
-              backgroundColor: '#f5f5f5',
+            style={{ 
+              marginLeft: '8px', 
+              padding: '4px 12px', 
+              cursor: 'pointer', 
+              border: '1px solid #ccc', 
+              borderRadius: '4px', 
+              backgroundColor: '#f5f5f5' 
             }}
           >
             Copy
@@ -214,7 +281,17 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Chessboard */}
+      {/* Game status display */}
+      <div style={{ textAlign: 'center', marginBottom: '10px' }}>
+        <div style={{ fontSize: '16px', fontWeight: 'bold' }}>{gameStatus}</div>
+        {currentPlayer && (
+          <div style={{ fontSize: '14px', color: '#666' }}>
+            Current turn: {currentPlayer}
+          </div>
+        )}
+      </div>
+
+      {/* Chessboard container */}
       <div style={{ width: '100%', maxWidth: '500px', margin: '0 auto' }}>
         <Chessboard
           position={fen}
