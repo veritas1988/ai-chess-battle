@@ -164,26 +164,34 @@ export default function Home() {
    * @param {string|undefined} moveUci Move in UCI (e.g. "e2e4") or undefined
    */
   const applyAIMove = (game, moveUci) => {
-    const moves = game.moves({ verbose: true });
-    if (moves.length === 0) return false;
-    // If the engine returned a string of at least four characters try to
-    // construct a move from it.  Otherwise pick a random fallback.
-    const candidate = (typeof moveUci === 'string' && moveUci.length >= 4)
-      ? { from: moveUci.slice(0, 2), to: moveUci.slice(2, 4), promotion: moveUci[4] }
-      : null;
-    try {
-      if (candidate) {
-        game.move(candidate);
-        return true;
+  const moves = game.moves({ verbose: true });
+  if (moves.length === 0) return false;
+
+  // If the engine returned a string of at least four characters, try to
+  // construct a move from it. Handle optional promotion correctly.
+  const candidate = (typeof moveUci === 'string' && moveUci.length >= 4)
+    ? {
+        from: moveUci.slice(0, 2),
+        to: moveUci.slice(2, 4),
+        promotion: moveUci.length === 5 ? moveUci[4] : undefined,
       }
-    } catch (err) {
-      // fall through to random fallback
+    : null;
+
+  try {
+    if (candidate) {
+      game.move(candidate);
+      return true;
     }
-    // Choose a random legal move when the AI fails or produces an illegal move
-    const randomMove = moves[Math.floor(Math.random() * moves.length)];
-    game.move(randomMove.san);
-    return true;
-  };
+  } catch (err) {
+    // fall through to random fallback
+  }
+
+  // Choose a random legal move when the AI fails or produces an illegal move
+  const randomMove = moves[Math.floor(Math.random() * moves.length)];
+  game.move(randomMove.san);
+  return true;
+};
+
 
   return (
     <div style={{ padding: '20px', fontFamily: 'Arial, sans-serif' }}>
