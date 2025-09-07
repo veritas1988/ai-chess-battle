@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { Chess } from 'chess.js';
+import * as ChessJS from 'chess.js';
+const Chess = typeof ChessJS === 'function' ? ChessJS : ChessJS.Chess;
+
+// Compatibility helpers across chess.js versions
+const isGameOver = (g) => (typeof g.isGameOver === 'function' ? g.isGameOver() : g.game_over());
+const isCheckmate = (g) => (typeof g.isCheckmate === 'function' ? g.isCheckmate() : g.in_checkmate());
+
 
 // Correct dynamic import for react-chessboard v4 (named export)
 const Chessboard = dynamic(
