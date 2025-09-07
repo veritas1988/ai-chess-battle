@@ -190,7 +190,7 @@ export default function Home() {
       {/* Header containing the token display and the win tally */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
         <div style={{ display: 'flex', alignItems: 'center' }}>
-          <strong style={{ marginRight: '5px' }}>Token:</strong>
+          <strong style={{ marginRight: '5px' }}>Token:asdasdasdasd</strong>
           <span style={{ fontFamily: 'monospace' }}>{token}</span>
           <button
             onClick={copyToken}
