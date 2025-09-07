@@ -15,12 +15,12 @@ const Chessboard = dynamic(
 export default function Home() {
   // Initialize a single Chess instance. The object itself contains the
   // game state and is mutated as moves are applied.
-  const gameRef = useRef(new Chess());
+  const gameRef = useRef(null);
 
   // Represent the current board position using a FEN string. Whenever
   // gameRef.current is mutated, updateFEN() should be called to refresh
   // the board displayed by react-chessboard.
-  const [fen, setFen] = useState(gameRef.current.fen());
+  const [fen, setFen] = useState('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1');
 
   // Keep track of each engine's total wins. These values are persisted
   // locally in the browser so they survive page refreshes.
@@ -62,23 +62,23 @@ export default function Home() {
   }, []);
 
   /**
-   * Kick off the infinite game loop after the component mounts. Because
-   * Next.js invokes components both on the server and client, guard this
-   * effect so it only runs once in the browser.
+   * Initialize the chess game and start the game loop
    */
   useEffect(() => {
-    // Add additional guards to ensure we're in the browser and component is mounted
     if (typeof window !== 'undefined' && !runningRef.current) {
+      // Initialize the game ref
+      gameRef.current = new Chess();
+      setFen(gameRef.current.fen());
+      
       runningRef.current = true;
       console.log('Starting game loop...');
-      // Start the asynchronous loop without awaiting it. It will continue
-      // playing games forever in the background.
+      
       startGameLoop().catch(error => {
         console.error('Game loop error:', error);
-        runningRef.current = false; // Reset so it can be restarted
+        runningRef.current = false;
       });
     }
-  }, []); // Remove the exhaustive-deps disable comment
+  }, []);
 
   /**
    * Helper to copy the token value to the clipboard. If the clipboard API
@@ -131,7 +131,6 @@ export default function Home() {
    * block the main thread; hence the use of async/await and timeouts.
    */
   const startGameLoop = async () => {
-    const game = gameRef.current;
     let gameCount = 0;
     
     while (true) {
@@ -139,14 +138,16 @@ export default function Home() {
         gameCount++;
         console.log(`Starting game ${gameCount}`);
         
-        // Reset game state at the start of each match
-        game.reset();
+        // Create a fresh Chess instance for each game
+        const game = new Chess();
+        gameRef.current = game;
+        
         setFen(game.fen());
         setGameStatus(`Game ${gameCount} in progress`);
         setCurrentPlayer('GPT (White)');
 
         // Play until a terminal state occurs
-        while (!game.game_over()) {
+        while (!game.isGameOver()) {
           // GPT move (white pieces)
           setCurrentPlayer('GPT (White)');
           const gptMove = await requestMove(game.fen(), 'gpt');
@@ -158,7 +159,7 @@ export default function Home() {
           
           // Brief pause to let the board render and the viewer follow along
           await new Promise(resolve => setTimeout(resolve, 1000));
-          if (game.game_over()) break;
+          if (game.isGameOver()) break;
 
           // Claude move (black pieces)
           setCurrentPlayer('Claude (Black)');
@@ -201,6 +202,7 @@ export default function Home() {
         
       } catch (error) {
         console.error('Error in game loop:', error);
+        console.error('Error details:', error.message, error.stack);
         setGameStatus('Error occurred, restarting...');
         await new Promise(resolve => setTimeout(resolve, 2000));
       }
@@ -218,6 +220,12 @@ export default function Home() {
    * @param {string} playerName Name of the player for logging
    */
   const applyAIMove = (game, moveUci, playerName) => {
+    // Verify the game object has the expected methods
+    if (!game || typeof game.moves !== 'function') {
+      console.error('Invalid game object - missing moves() method');
+      return false;
+    }
+
     const moves = game.moves({ verbose: true });
     if (moves.length === 0) {
       console.log('No legal moves available');
@@ -249,9 +257,14 @@ export default function Home() {
 
     // Choose a random legal move when the AI fails or produces an illegal move
     const randomMove = moves[Math.floor(Math.random() * moves.length)];
-    const move = game.move(randomMove.san);
-    console.log(`${playerName} fallback to random move: ${move.san}`);
-    return true;
+    try {
+      const move = game.move(randomMove.san);
+      console.log(`${playerName} fallback to random move: ${move.san}`);
+      return true;
+    } catch (err) {
+      console.error(`Failed to apply fallback move: ${err.message}`);
+      return false;
+    }
   };
 
   return (
