@@ -1,8 +1,4 @@
-/*
- * API endpoint to decrement the viewer count when someone stops watching.
- */
-
-import { getGameManager } from './game-manager';
+import { getGameManager } from '../../lib/game-manager';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
