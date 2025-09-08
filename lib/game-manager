@@ -1,6 +1,5 @@
 /*
- * Global game manager that maintains a single chess game state.
- * This runs on the server and ensures only one game is active at a time.
+ * Global game manager that prevents multiple instances from running
  */
 
 import { Chess } from 'chess.js';
@@ -8,6 +7,17 @@ import { Chess } from 'chess.js';
 class GameManager {
   constructor() {
     this.instanceId = Math.random().toString(36).substring(2, 8);
+    
+    // Prevent multiple instances from running game loops
+    if (global.gameManagerExists) {
+      console.log(`Instance ${this.instanceId} blocked - another instance already running`);
+      this.isBlocked = true;
+      return;
+    }
+    
+    global.gameManagerExists = true;
+    this.isBlocked = false;
+    
     this.game = new Chess();
     this.gptWins = 0;
     this.claudeWins = 0;
@@ -19,13 +29,27 @@ class GameManager {
     this.moveInProgress = false;
     this.moveHistory = [];
     
-    console.log(`GameManager instance ${this.instanceId} created`);
+    console.log(`GameManager instance ${this.instanceId} created and running`);
     
     // Start the game loop
     this.startGameLoop();
   }
 
   getGameState() {
+    if (this.isBlocked) {
+      return {
+        fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+        gptWins: 0,
+        claudeWins: 0,
+        gameId: 1,
+        gameStatus: 'Instance blocked',
+        currentPlayer: '',
+        viewers: 0,
+        moveHistory: [],
+        instanceId: this.instanceId
+      };
+    }
+
     return {
       fen: this.game.fen(),
       gptWins: this.gptWins,
@@ -40,17 +64,20 @@ class GameManager {
   }
 
   addViewer() {
+    if (this.isBlocked) return;
     this.viewers++;
     console.log(`Instance ${this.instanceId}: ${this.viewers} viewers`);
   }
 
   removeViewer() {
+    if (this.isBlocked) return;
     this.viewers = Math.max(0, this.viewers - 1);
     console.log(`Instance ${this.instanceId}: ${this.viewers} viewers`);
   }
 
   // Reset game state completely
   resetGame() {
+    if (this.isBlocked) return;
     this.game = new Chess();
     this.moveHistory = [];
     this.currentPlayer = '';
@@ -59,6 +86,8 @@ class GameManager {
   }
 
   async requestMove(ai) {
+    if (this.isBlocked) return undefined;
+    
     try {
       const response = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'}/api/move`, {
         method: 'POST',
@@ -83,6 +112,8 @@ class GameManager {
   }
 
   applyAIMove(moveUci, playerName) {
+    if (this.isBlocked) return false;
+    
     if (!this.game || typeof this.game.moves !== 'function') {
       console.error(`Instance ${this.instanceId}: Invalid game object`);
       return false;
@@ -130,6 +161,11 @@ class GameManager {
   }
 
   async startGameLoop() {
+    if (this.isBlocked) {
+      console.log(`Instance ${this.instanceId}: Blocked from starting game loop`);
+      return;
+    }
+    
     if (this.isRunning) {
       console.log(`Instance ${this.instanceId}: Game loop already running`);
       return;
@@ -230,8 +266,12 @@ class GameManager {
   }
 
   stop() {
+    if (this.isBlocked) return;
     this.isRunning = false;
     console.log(`Instance ${this.instanceId}: Game loop stopped`);
+    
+    // Release the global lock when stopping
+    delete global.gameManagerExists;
   }
 }
 
