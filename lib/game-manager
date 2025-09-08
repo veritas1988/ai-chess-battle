@@ -7,6 +7,7 @@ import { Chess } from 'chess.js';
 
 class GameManager {
   constructor() {
+    this.instanceId = Math.random().toString(36).substring(2, 8);
     this.game = new Chess();
     this.gptWins = 0;
     this.claudeWins = 0;
@@ -16,7 +17,9 @@ class GameManager {
     this.viewers = 0;
     this.isRunning = false;
     this.moveInProgress = false;
-    this.moveHistory = []; // Add move history tracking
+    this.moveHistory = [];
+    
+    console.log(`GameManager instance ${this.instanceId} created`);
     
     // Start the game loop
     this.startGameLoop();
@@ -31,16 +34,28 @@ class GameManager {
       gameStatus: this.gameStatus,
       currentPlayer: this.currentPlayer,
       viewers: this.viewers,
-      moveHistory: this.moveHistory // Add move history to state
+      moveHistory: this.moveHistory,
+      instanceId: this.instanceId
     };
   }
 
   addViewer() {
     this.viewers++;
+    console.log(`Instance ${this.instanceId}: ${this.viewers} viewers`);
   }
 
   removeViewer() {
     this.viewers = Math.max(0, this.viewers - 1);
+    console.log(`Instance ${this.instanceId}: ${this.viewers} viewers`);
+  }
+
+  // Reset game state completely
+  resetGame() {
+    this.game = new Chess();
+    this.moveHistory = [];
+    this.currentPlayer = '';
+    this.moveInProgress = false;
+    console.log(`Instance ${this.instanceId}: Game ${this.gameId} reset - Fresh board: ${this.game.fen()}`);
   }
 
   async requestMove(ai) {
@@ -55,27 +70,27 @@ class GameManager {
       });
       
       if (!response.ok) {
-        console.error(`AI API call failed for ${ai}:`, response.status);
+        console.error(`Instance ${this.instanceId}: AI API call failed for ${ai}:`, response.status);
         return undefined;
       }
       
       const data = await response.json();
       return typeof data.move === 'string' ? data.move.trim() : undefined;
     } catch (error) {
-      console.error(`Error calling AI API for ${ai}:`, error);
+      console.error(`Instance ${this.instanceId}: Error calling AI API for ${ai}:`, error);
       return undefined;
     }
   }
 
   applyAIMove(moveUci, playerName) {
     if (!this.game || typeof this.game.moves !== 'function') {
-      console.error('Invalid game object');
+      console.error(`Instance ${this.instanceId}: Invalid game object`);
       return false;
     }
 
     const moves = this.game.moves({ verbose: true });
     if (moves.length === 0) {
-      console.log('No legal moves available');
+      console.log(`Instance ${this.instanceId}: No legal moves available`);
       return false;
     }
 
@@ -92,105 +107,120 @@ class GameManager {
       if (candidate) {
         const move = this.game.move(candidate);
         if (move) {
-          this.moveHistory.push(move.san); // Add move to history
-          console.log(`${playerName} played: ${moveUci} (${move.san})`);
+          this.moveHistory.push(move.san);
+          console.log(`Instance ${this.instanceId}: ${playerName} played: ${moveUci} (${move.san}) - Game ${this.gameId}`);
           return true;
         }
       }
     } catch (err) {
-      console.log(`${playerName}'s move ${moveUci} was invalid:`, err.message);
+      console.log(`Instance ${this.instanceId}: ${playerName}'s move ${moveUci} was invalid:`, err.message);
     }
 
     // Fallback to random move
     const randomMove = moves[Math.floor(Math.random() * moves.length)];
     try {
       const move = this.game.move(randomMove.san);
-      this.moveHistory.push(move.san); // Add fallback move to history
-      console.log(`${playerName} fallback to random move: ${move.san}`);
+      this.moveHistory.push(move.san);
+      console.log(`Instance ${this.instanceId}: ${playerName} fallback to random move: ${move.san} - Game ${this.gameId}`);
       return true;
     } catch (err) {
-      console.error(`Failed to apply fallback move: ${err.message}`);
+      console.error(`Instance ${this.instanceId}: Failed to apply fallback move: ${err.message}`);
       return false;
     }
   }
 
   async startGameLoop() {
-    if (this.isRunning) return;
+    if (this.isRunning) {
+      console.log(`Instance ${this.instanceId}: Game loop already running`);
+      return;
+    }
     this.isRunning = true;
     
-    console.log('Starting global game loop...');
+    console.log(`Instance ${this.instanceId}: Starting global game loop...`);
 
     while (this.isRunning) {
       try {
-        console.log(`Starting game ${this.gameId}`);
+        console.log(`Instance ${this.instanceId}: === Starting Game ${this.gameId} ===`);
         
-        // Reset game
-        this.game = new Chess();
-        this.moveHistory = []; // Reset move history for new game
+        // Completely reset game state
+        this.resetGame();
         this.gameStatus = `Game ${this.gameId} in progress`;
         this.currentPlayer = 'GPT (White)';
         
+        // Brief pause to let state propagate
+        await this.sleep(2000);
+        
         // Play the game
         while (!this.game.isGameOver() && this.isRunning) {
-          // GPT move
-          this.currentPlayer = 'GPT (White)';
-          this.moveInProgress = true;
-          
-          const gptMove = await this.requestMove('gpt');
-          if (!this.applyAIMove(gptMove, 'GPT')) {
-            console.log('GPT failed to make a move, ending game');
-            break;
+          // GPT move (White)
+          if (this.game.turn() === 'w') {
+            this.currentPlayer = 'GPT (White)';
+            this.moveInProgress = true;
+            
+            const gptMove = await this.requestMove('gpt');
+            if (!this.applyAIMove(gptMove, 'GPT')) {
+              console.log(`Instance ${this.instanceId}: GPT failed to make a move, ending game`);
+              break;
+            }
+            
+            this.moveInProgress = false;
+            await this.sleep(3000);
           }
-          
-          this.moveInProgress = false;
-          await this.sleep(2000); // Pause between moves
           
           if (this.game.isGameOver()) break;
 
-          // Claude move
-          this.currentPlayer = 'Claude (Black)';
-          this.moveInProgress = true;
-          
-          const claudeMove = await this.requestMove('claude');
-          if (!this.applyAIMove(claudeMove, 'Claude')) {
-            console.log('Claude failed to make a move, ending game');
-            break;
+          // Claude move (Black)
+          if (this.game.turn() === 'b') {
+            this.currentPlayer = 'Claude (Black)';
+            this.moveInProgress = true;
+            
+            const claudeMove = await this.requestMove('claude');
+            if (!this.applyAIMove(claudeMove, 'Claude')) {
+              console.log(`Instance ${this.instanceId}: Claude failed to make a move, ending game`);
+              break;
+            }
+            
+            this.moveInProgress = false;
+            await this.sleep(3000);
           }
-          
-          this.moveInProgress = false;
-          await this.sleep(2000); // Pause between moves
         }
 
-        // Determine winner
+        // FIXED: Determine winner correctly
         let winner = '';
         if (this.game.isCheckmate()) {
-          winner = this.game.turn() === 'b' ? 'gpt' : 'claude';
-          this.gameStatus = `Checkmate! ${winner === 'gpt' ? 'GPT' : 'Claude'} wins!`;
+          // When checkmate occurs, game.turn() returns the player who CANNOT move (the loser)
+          // So if it's white's turn and checkmate, white lost (Claude wins)
+          // If it's black's turn and checkmate, black lost (GPT wins)
+          winner = this.game.turn() === 'w' ? 'claude' : 'gpt';
+          this.gameStatus = `Game ${this.gameId} finished - ${winner === 'gpt' ? 'GPT' : 'Claude'} wins by checkmate!`;
         } else if (this.game.isStalemate()) {
-          this.gameStatus = 'Stalemate - Draw!';
+          this.gameStatus = `Game ${this.gameId} finished - Stalemate (Draw)`;
         } else if (this.game.isDraw()) {
-          this.gameStatus = 'Draw!';
+          this.gameStatus = `Game ${this.gameId} finished - Draw`;
         } else {
-          this.gameStatus = 'Game ended';
+          this.gameStatus = `Game ${this.gameId} ended`;
         }
 
+        // Update win counters
         if (winner === 'gpt') {
           this.gptWins++;
+          console.log(`Instance ${this.instanceId}: GPT wins! Score now GPT: ${this.gptWins}, Claude: ${this.claudeWins}`);
         } else if (winner === 'claude') {
           this.claudeWins++;
+          console.log(`Instance ${this.instanceId}: Claude wins! Score now GPT: ${this.gptWins}, Claude: ${this.claudeWins}`);
         }
 
         this.currentPlayer = '';
-        console.log(`Game ${this.gameId} finished: ${this.gameStatus}`);
+        console.log(`Instance ${this.instanceId}: Game ${this.gameId} finished: ${this.gameStatus}`);
 
-        // Wait before next game
-        await this.sleep(5000);
+        // Wait before next game and increment game ID
+        await this.sleep(8000);
         this.gameId++;
         
       } catch (error) {
-        console.error('Error in game loop:', error);
-        this.gameStatus = 'Error occurred, restarting...';
-        await this.sleep(3000);
+        console.error(`Instance ${this.instanceId}: Error in game loop:`, error);
+        this.gameStatus = `Error occurred, restarting... (Instance ${this.instanceId})`;
+        await this.sleep(5000);
       }
     }
   }
@@ -201,6 +231,7 @@ class GameManager {
 
   stop() {
     this.isRunning = false;
+    console.log(`Instance ${this.instanceId}: Game loop stopped`);
   }
 }
 
