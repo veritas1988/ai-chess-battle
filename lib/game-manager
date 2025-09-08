@@ -16,6 +16,7 @@ class GameManager {
     this.viewers = 0;
     this.isRunning = false;
     this.moveInProgress = false;
+    this.moveHistory = []; // Add move history tracking
     
     // Start the game loop
     this.startGameLoop();
@@ -29,7 +30,8 @@ class GameManager {
       gameId: this.gameId,
       gameStatus: this.gameStatus,
       currentPlayer: this.currentPlayer,
-      viewers: this.viewers
+      viewers: this.viewers,
+      moveHistory: this.moveHistory // Add move history to state
     };
   }
 
@@ -90,6 +92,7 @@ class GameManager {
       if (candidate) {
         const move = this.game.move(candidate);
         if (move) {
+          this.moveHistory.push(move.san); // Add move to history
           console.log(`${playerName} played: ${moveUci} (${move.san})`);
           return true;
         }
@@ -102,6 +105,7 @@ class GameManager {
     const randomMove = moves[Math.floor(Math.random() * moves.length)];
     try {
       const move = this.game.move(randomMove.san);
+      this.moveHistory.push(move.san); // Add fallback move to history
       console.log(`${playerName} fallback to random move: ${move.san}`);
       return true;
     } catch (err) {
@@ -122,6 +126,7 @@ class GameManager {
         
         // Reset game
         this.game = new Chess();
+        this.moveHistory = []; // Reset move history for new game
         this.gameStatus = `Game ${this.gameId} in progress`;
         this.currentPlayer = 'GPT (White)';
         
